@@ -2,7 +2,7 @@
 /**
  * Admin UI & Settings Handler
  * @package HOA/COA File Archive Assistant
- * @version 1.2.13
+ * @version 1.2.14
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
@@ -15,11 +15,52 @@ class HOACOA_FAA_Admin {
 		add_action( 'admin_menu', [ $this, 'add_menu' ] );
 		add_action( 'admin_init', [ $this, 'settings_init' ] );
 		add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_assets' ] );
+		add_action( 'admin_head', [ $this, 'inject_fm_pro_hash_fix' ], 1 ); // Priority 1 to load BEFORE Pro scripts
 		add_action( 'wp_dashboard_setup', [ $this, 'add_dashboard_widgets' ] );
 		
 		add_action( 'wp_ajax_hoacoa_faa_check_path', [ $this, 'ajax_check_path' ] );
 		add_action( 'wp_ajax_hoacoa_faa_create_path', [ $this, 'ajax_create_path' ] );
 		add_action( 'wp_ajax_hoacoa_faa_validate_category', [ $this, 'ajax_validate_category' ] );
+	}
+
+	/**
+	 * SFLWA FIX: Update-proof override for File Manager Pro versions.
+	 * This prevents Pro versions from clearing the URL hash on deep links.
+	 */
+	public function inject_fm_pro_hash_fix(): void {
+		if ( ! isset( $_GET['page'] ) ) return;
+
+		$fm_pages = [ 'wp_file_manager', 'file_manager_advanced_ui', 'njt-fs-filemanager' ];
+		if ( ! in_array( $_GET['page'], $fm_pages ) ) return;
+		?>
+		<script>
+		(function($) {
+			// If we have a deep link, we need to stop the Pro version's reset script
+			if (window.location.hash && window.location.hash.indexOf('#elf_l1_') === 0) {
+				
+				// 1. Intercept and neutralize the 'replaceState' call before it clears the hash
+				var originalReplaceState = history.replaceState;
+				history.replaceState = function(state, title, url) {
+					if (url && url.indexOf('admin.php') !== -1 && url.indexOf('#') === -1) {
+						// Stop the Pro plugin from removing our hash!
+						return; 
+					}
+					return originalReplaceState.apply(history, arguments);
+				};
+
+				// 2. Prevent elFinder from being forced back to root (Bridge specific flags)
+				$(document).on('elfinderready', function() {
+					if (typeof elFinderInstance !== 'undefined') {
+						// Neutralize File Manager Advanced Pro reset
+						elFinderInstance._fmaFirstRootBound = true; 
+						// Neutralize WP File Manager Pro reset
+						elFinderInstance._wpfmFirstRootBound = true;
+					}
+				});
+			}
+		})(jQuery);
+		</script>
+		<?php
 	}
 
 	public function add_dashboard_widgets(): void {
@@ -42,7 +83,6 @@ class HOACOA_FAA_Admin {
 
 	/**
 	 * Generates a deep link to a specific folder for elFinder-based plugins.
-	 * Updated v1.2.13: Refined WP File Manager root hash mapping.
 	 */
 	private function get_file_manager_link( string $full_file_path = '' ): string {
 		$opt = get_option('hoacoa_faa_options', []);
@@ -60,7 +100,6 @@ class HOACOA_FAA_Admin {
 		$absolute_dir = dirname(trailingslashit($opt['path_owner'] ?? '') . ltrim($full_file_path, '/'));
 		$volume_root = ABSPATH;
 
-		// Bridge-specific volume root overrides
 		if ( $bridge === 'file-manager-advanced' ) {
 			$fma_opt = get_option('fmaoptions');
 			$volume_root = $fma_opt['public_path'] ?? ABSPATH;
@@ -76,12 +115,9 @@ class HOACOA_FAA_Admin {
 			}
 		}
 
-		// Calculate relative path for elFinder hash
 		$relative = str_replace( trailingslashit($volume_root), '', trailingslashit($absolute_dir) );
 		$relative = trim(str_replace('\\', '/', $relative), '/'); 
 		
-		// Encode hash: l1_ (Volume 1) + base64
-		// Most elFinder plugins use 'Lw' for the root folder itself
 		if (empty($relative)) {
 			$hash = 'l1_Lw';
 		} else {
@@ -180,7 +216,32 @@ class HOACOA_FAA_Admin {
 		<?php
 	}
 
-	public function enqueue_assets($h) { if(!str_contains($h,'hoacoa-faa')) return; wp_add_inline_script('jquery-core', "jQuery(document).ready(function($){ $('#hcaa-run-audit').on('click', function(){ var b=$(this); b.attr('disabled',true).text('Scanning...'); $.post(ajaxurl,{action:'hoacoa_faa_run_system_audit'},function(){location.reload();}); }); $(document).on('click','.hcaa-validate-path',function(){ var b=$(this); var td=b.closest('td'); $.post(ajaxurl,{action:b.hasClass('hcaa-validate-category')?'hoacoa_faa_validate_category':'hoacoa_faa_check_path',path:td.find('input[type=text]').val()},function(r){td.find('.path-status').html(r.success?'✔':'✖ <button type=\"button\" class=\"button hcaa-create-path\">Create</button>');}); }); $(document).on('click','.hcaa-create-path',function(){ var td=$(this).closest('td'); $.post(ajaxurl,{action:'hoacoa_faa_create_path',path:td.find('input[type=text]').val(),is_category:td.find('.hcaa-validate-category').length>0},function(r){if(r.success)td.find('.path-status').html('✔');}); }); $('.hcaa-add-category').on('click',function(){ var t=$('#hcaa-category-table tbody'); t.append($('#hcaa-category-template').html().replace(/{{INDEX}}/g,t.find('tr').length)); }); $(document).on('click','.hcaa-remove-row',function(){ $(this).closest('tr').remove(); }); });"); }
+	public function enqueue_assets($h) { 
+		if(!str_contains($h,'hoacoa-faa')) return; 
+		wp_add_inline_script('jquery-core', "jQuery(document).ready(function($){ 
+			$('#hcaa-run-audit').on('click', function(){ 
+				var b=$(this); b.attr('disabled',true).text('Scanning...'); 
+				$.post(ajaxurl,{action:'hoacoa_faa_run_system_audit'},function(){location.reload();}); 
+			}); 
+			$(document).on('click','.hcaa-validate-path',function(){ 
+				var b=$(this); var td=b.closest('td'); 
+				$.post(ajaxurl,{action:b.hasClass('hcaa-validate-category')?'hoacoa_faa_validate_category':'hoacoa_faa_check_path',path:td.find('input[type=text]').val()},function(r){
+					td.find('.path-status').html(r.success?'✔':'✖ <button type=\"button\" class=\"button hcaa-create-path\">Create</button>');
+				}); 
+			}); 
+			$(document).on('click','.hcaa-create-path',function(){ 
+				var td=$(this).closest('td'); 
+				$.post(ajaxurl,{action:'hoacoa_faa_create_path',path:td.find('input[type=text]').val(),is_category:td.find('.hcaa-validate-category').length>0},function(r){
+					if(r.success)td.find('.path-status').html('✔');
+				}); 
+			}); 
+			$('.hcaa-add-category').on('click',function(){ 
+				var t=$('#hcaa-category-table tbody'); 
+				t.append($('#hcaa-category-template').html().replace(/{{INDEX}}/g,t.find('tr').length)); 
+			}); 
+			$(document).on('click','.hcaa-remove-row',function(){ $(this).closest('tr').remove(); }); 
+		});"); 
+	}
 	
 	public function render_settings() { 
 		$tab = $_GET['tab'] ?? 'folders'; $opt = get_option('hoacoa_faa_options', []);
