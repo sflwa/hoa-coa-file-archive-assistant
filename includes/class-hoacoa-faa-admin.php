@@ -2,7 +2,7 @@
 /**
  * Admin UI & Settings Handler
  * @package HOA/COA File Archive Assistant
- * @version 1.2.5
+ * @version 1.2.13
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
@@ -40,6 +40,57 @@ class HOACOA_FAA_Admin {
 		add_submenu_page( 'hoacoa-faa-main', 'Activity Log', 'Activity Log', 'manage_options', 'hoacoa-faa-logs', [ $this, 'render_logs' ] );
 	}
 
+	/**
+	 * Generates a deep link to a specific folder for elFinder-based plugins.
+	 * Updated v1.2.13: Refined WP File Manager root hash mapping.
+	 */
+	private function get_file_manager_link( string $full_file_path = '' ): string {
+		$opt = get_option('hoacoa_faa_options', []);
+		$bridge = $opt['fm_bridge'] ?? 'none';
+		
+		$base_url = match($bridge) {
+			'wp-file-manager' => admin_url('admin.php?page=wp_file_manager'),
+			'file-manager-advanced' => admin_url('admin.php?page=file_manager_advanced_ui'),
+			'filester' => admin_url('admin.php?page=njt-fs-filemanager'),
+			default => '',
+		};
+
+		if ( empty($base_url) || empty($full_file_path) ) return $base_url;
+
+		$absolute_dir = dirname(trailingslashit($opt['path_owner'] ?? '') . ltrim($full_file_path, '/'));
+		$volume_root = ABSPATH;
+
+		// Bridge-specific volume root overrides
+		if ( $bridge === 'file-manager-advanced' ) {
+			$fma_opt = get_option('fmaoptions');
+			$volume_root = $fma_opt['public_path'] ?? ABSPATH;
+		} elseif ( $bridge === 'filester' ) {
+			$fs_opt = get_option('njt_fs_settings');
+			if ( !empty($fs_opt['njt_fs_file_manager_settings']['root_folder_path']) ) {
+				$volume_root = $fs_opt['njt_fs_file_manager_settings']['root_folder_path'];
+			}
+		} elseif ( $bridge === 'wp-file-manager' ) {
+			$wpfm_opt = get_option('wp_file_manager_settings');
+			if ( !empty($wpfm_opt['public_path']) ) {
+				$volume_root = $wpfm_opt['public_path'];
+			}
+		}
+
+		// Calculate relative path for elFinder hash
+		$relative = str_replace( trailingslashit($volume_root), '', trailingslashit($absolute_dir) );
+		$relative = trim(str_replace('\\', '/', $relative), '/'); 
+		
+		// Encode hash: l1_ (Volume 1) + base64
+		// Most elFinder plugins use 'Lw' for the root folder itself
+		if (empty($relative)) {
+			$hash = 'l1_Lw';
+		} else {
+			$hash = 'l1_' . rtrim(strtr(base64_encode($relative), '+/=', '-_.'), '.');
+		}
+		
+		return $base_url . '#elf_' . $hash;
+	}
+
 	public function render_dashboard(): void {
 		$report = get_transient( 'hcaa_last_audit_report' );
 		$opt = get_option('hoacoa_faa_options', []);
@@ -47,7 +98,6 @@ class HOACOA_FAA_Admin {
 		?>
 		<div class="wrap">
 			<h1>Archive Assistant Dashboard</h1>
-			
 			<div style="background: #fff; padding: 15px; border: 1px solid #ccd0d4; border-radius: 4px; margin: 20px 0;">
 				<p><strong>Note:</strong> <?php echo esc_html( self::DISCLAIMER ); ?></p>
 			</div>
@@ -58,7 +108,6 @@ class HOACOA_FAA_Admin {
 					<p style="font-size:28px; font-weight:bold; margin: 10px 0;"><?php echo count($report ?: []); ?></p>
 					<small>Documents currently tracked in audit.</small>
 				</div>
-
 				<div class="card" style="margin:0; padding:20px; border-left:4px solid #d63638;">
 					<h3>Format Mismatches</h3>
 					<?php $mismatches = array_filter((array)$report, fn($f) => $f['status'] === 'Mismatch'); ?>
@@ -95,7 +144,6 @@ class HOACOA_FAA_Admin {
 		<?php
 	}
 
-	// Keep existing Audit Report, Settings, and Logs methods from v1.2.3...
 	public function render_audit_report() {
 		$cached = get_transient( 'hcaa_last_audit_report' );
 		?>
@@ -108,9 +156,17 @@ class HOACOA_FAA_Admin {
 						<thead><tr><th>File</th><th>Category</th><th>Audit Status</th><th>Scheduled Move</th></tr></thead>
 						<tbody>
 							<?php foreach ( $cached as $f ) : 
-								$color = ( $f['status'] === 'Valid' ) ? 'green' : ( $f['status'] === 'Mismatch' ? 'red' : 'gray' ); ?>
+								$color = ( $f['status'] === 'Valid' ) ? 'green' : ( $f['status'] === 'Mismatch' ? 'red' : 'gray' );
+								$fm_url = $this->get_file_manager_link($f['path']);
+								?>
 								<tr>
-									<td><strong><?php echo esc_html($f['name']); ?></strong><br><small><?php echo esc_html($f['path']); ?></small></td>
+									<td>
+										<strong><?php echo esc_html($f['name']); ?></strong><br>
+										<small><?php echo esc_html($f['path']); ?></small>
+										<?php if ($f['status'] === 'Mismatch' && !empty($fm_url)) : ?>
+											<div style="margin-top:5px;"><a href="<?php echo esc_url($fm_url); ?>" class="button button-small" target="_blank">Open Folder to Rename</a></div>
+										<?php endif; ?>
+									</td>
 									<td><?php echo esc_html($f['category']); ?></td>
 									<td style="color:<?php echo $color; ?>; font-weight:bold;"><?php echo esc_html($f['status']); ?></td>
 									<td><code><?php echo esc_html($f['move_on']); ?></code></td>
@@ -125,18 +181,34 @@ class HOACOA_FAA_Admin {
 	}
 
 	public function enqueue_assets($h) { if(!str_contains($h,'hoacoa-faa')) return; wp_add_inline_script('jquery-core', "jQuery(document).ready(function($){ $('#hcaa-run-audit').on('click', function(){ var b=$(this); b.attr('disabled',true).text('Scanning...'); $.post(ajaxurl,{action:'hoacoa_faa_run_system_audit'},function(){location.reload();}); }); $(document).on('click','.hcaa-validate-path',function(){ var b=$(this); var td=b.closest('td'); $.post(ajaxurl,{action:b.hasClass('hcaa-validate-category')?'hoacoa_faa_validate_category':'hoacoa_faa_check_path',path:td.find('input[type=text]').val()},function(r){td.find('.path-status').html(r.success?'✔':'✖ <button type=\"button\" class=\"button hcaa-create-path\">Create</button>');}); }); $(document).on('click','.hcaa-create-path',function(){ var td=$(this).closest('td'); $.post(ajaxurl,{action:'hoacoa_faa_create_path',path:td.find('input[type=text]').val(),is_category:td.find('.hcaa-validate-category').length>0},function(r){if(r.success)td.find('.path-status').html('✔');}); }); $('.hcaa-add-category').on('click',function(){ var t=$('#hcaa-category-table tbody'); t.append($('#hcaa-category-template').html().replace(/{{INDEX}}/g,t.find('tr').length)); }); $(document).on('click','.hcaa-remove-row',function(){ $(this).closest('tr').remove(); }); });"); }
+	
 	public function render_settings() { 
 		$tab = $_GET['tab'] ?? 'folders'; $opt = get_option('hoacoa_faa_options', []);
 		?>
 		<div class="wrap">
 			<h1>Settings</h1>
-			<h2 class="nav-tab-wrapper"><a href="?page=hoacoa-faa-settings&tab=folders" class="nav-tab <?php echo $tab=='folders'?'nav-tab-active':''; ?>">Folders</a><a href="?page=hoacoa-faa-settings&tab=categories" class="nav-tab <?php echo $tab=='categories'?'nav-tab-active':''; ?>">Categories</a></h2>
+			<h2 class="nav-tab-wrapper">
+				<a href="?page=hoacoa-faa-settings&tab=folders" class="nav-tab <?php echo $tab=='folders'?'nav-tab-active':''; ?>">Folders & Bridges</a>
+				<a href="?page=hoacoa-faa-settings&tab=categories" class="nav-tab <?php echo $tab=='categories'?'nav-tab-active':''; ?>">Categories</a>
+			</h2>
 			<form method="post" action="options.php">
 				<?php settings_fields('hoacoa_faa_options_group'); ?>
 				<?php if ($tab == 'folders') : ?>
 					<table class="form-table">
 						<tr><th>Owners Root</th><td><input type="text" name="hoacoa_faa_options[path_owner]" value="<?php echo esc_attr($opt['path_owner']??''); ?>" class="large-text"><button type="button" class="button hcaa-validate-path">Check</button><span class="path-status"></span></td></tr>
 						<tr><th>Archive Root</th><td><input type="text" name="hoacoa_faa_options[path_archive]" value="<?php echo esc_attr($opt['path_archive']??''); ?>" class="large-text"><button type="button" class="button hcaa-validate-path">Check</button><span class="path-status"></span></td></tr>
+						<tr>
+							<th>File Manager Bridge</th>
+							<td>
+								<select name="hoacoa_faa_options[fm_bridge]">
+									<option value="none" <?php selected($opt['fm_bridge']??'', 'none'); ?>>None</option>
+									<option value="wp-file-manager" <?php selected($opt['fm_bridge']??'', 'wp-file-manager'); ?>>WP File Manager</option>
+									<option value="file-manager-advanced" <?php selected($opt['fm_bridge']??'', 'file-manager-advanced'); ?>>File Manager Advanced</option>
+									<option value="filester" <?php selected($opt['fm_bridge']??'', 'filester'); ?>>Filester</option>
+								</select>
+								<p class="description">Adds direct links to the Audit Report to help fix filename mismatches.</p>
+							</td>
+						</tr>
 					</table>
 				<?php else : ?>
 					<table class="widefat striped" id="hcaa-category-table">
