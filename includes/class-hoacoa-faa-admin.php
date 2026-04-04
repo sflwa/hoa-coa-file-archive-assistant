@@ -1,8 +1,8 @@
 <?php
 /**
- * Admin UI & Infrastructure
+ * Admin UI & Infrastructure Hub
  * @package HOA/COA File Archive Assistant
- * @version 1.2.19
+ * @version 1.2.26
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
@@ -13,6 +13,10 @@ class HOACOA_FAA_Admin {
 
 	public function __construct() {
 		add_action( 'admin_menu', [ $this, 'add_menu' ] );
+		
+		// Maintains menu expansion when editing statutes in a new tab
+		add_filter( 'parent_file', [ $this, 'fix_cpt_parent_menu' ] );
+		
 		add_action( 'admin_init', [ $this, 'settings_init' ] );
 		add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_assets' ] );
 		add_action( 'admin_head', [ $this, 'inject_fm_pro_hash_fix' ], 1 );
@@ -21,6 +25,14 @@ class HOACOA_FAA_Admin {
 		add_action( 'wp_ajax_hoacoa_faa_check_path', [ $this, 'ajax_check_path' ] );
 		add_action( 'wp_ajax_hoacoa_faa_create_path', [ $this, 'ajax_create_path' ] );
 		add_action( 'wp_ajax_hoacoa_faa_validate_category', [ $this, 'ajax_validate_category' ] );
+	}
+
+	public function fix_cpt_parent_menu( $parent_file ) {
+		global $current_screen;
+		if ( isset($current_screen->post_type) && 'hcaa_statute' === $current_screen->post_type ) {
+			return 'hoacoa-faa-main';
+		}
+		return $parent_file;
 	}
 
 	public function add_menu(): void {
