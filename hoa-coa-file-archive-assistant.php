@@ -98,7 +98,7 @@ final class HOACOA_FAA_Archive_Assistant {
             'labels'             => $labels,
             'public'             => false,
             'show_ui'            => true,
-            'show_in_menu'       => 'hoacoa-faa-main',
+            'show_in_menu'       => 'false',
             'capability_type'    => 'post',
             'hierarchical'       => false,
             'supports'           => [ 'title', 'editor' ],
