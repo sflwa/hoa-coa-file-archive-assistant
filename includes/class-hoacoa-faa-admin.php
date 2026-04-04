@@ -1,8 +1,8 @@
 <?php
 /**
- * Admin UI & Settings Handler
+ * Admin UI & Infrastructure
  * @package HOA/COA File Archive Assistant
- * @version 1.2.14
+ * @version 1.2.19
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
@@ -15,7 +15,7 @@ class HOACOA_FAA_Admin {
 		add_action( 'admin_menu', [ $this, 'add_menu' ] );
 		add_action( 'admin_init', [ $this, 'settings_init' ] );
 		add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_assets' ] );
-		add_action( 'admin_head', [ $this, 'inject_fm_pro_hash_fix' ], 1 ); // Priority 1 to load BEFORE Pro scripts
+		add_action( 'admin_head', [ $this, 'inject_fm_pro_hash_fix' ], 1 );
 		add_action( 'wp_dashboard_setup', [ $this, 'add_dashboard_widgets' ] );
 		
 		add_action( 'wp_ajax_hoacoa_faa_check_path', [ $this, 'ajax_check_path' ] );
@@ -23,161 +23,14 @@ class HOACOA_FAA_Admin {
 		add_action( 'wp_ajax_hoacoa_faa_validate_category', [ $this, 'ajax_validate_category' ] );
 	}
 
-	/**
-	 * SFLWA FIX: Update-proof override for File Manager Pro versions.
-	 * This prevents Pro versions from clearing the URL hash on deep links.
-	 */
-	public function inject_fm_pro_hash_fix(): void {
-		if ( ! isset( $_GET['page'] ) ) return;
-
-		$fm_pages = [ 'wp_file_manager', 'file_manager_advanced_ui', 'njt-fs-filemanager' ];
-		if ( ! in_array( $_GET['page'], $fm_pages ) ) return;
-		?>
-		<script>
-		(function($) {
-			// If we have a deep link, we need to stop the Pro version's reset script
-			if (window.location.hash && window.location.hash.indexOf('#elf_l1_') === 0) {
-				
-				// 1. Intercept and neutralize the 'replaceState' call before it clears the hash
-				var originalReplaceState = history.replaceState;
-				history.replaceState = function(state, title, url) {
-					if (url && url.indexOf('admin.php') !== -1 && url.indexOf('#') === -1) {
-						// Stop the Pro plugin from removing our hash!
-						return; 
-					}
-					return originalReplaceState.apply(history, arguments);
-				};
-
-				// 2. Prevent elFinder from being forced back to root (Bridge specific flags)
-				$(document).on('elfinderready', function() {
-					if (typeof elFinderInstance !== 'undefined') {
-						// Neutralize File Manager Advanced Pro reset
-						elFinderInstance._fmaFirstRootBound = true; 
-						// Neutralize WP File Manager Pro reset
-						elFinderInstance._wpfmFirstRootBound = true;
-					}
-				});
-			}
-		})(jQuery);
-		</script>
-		<?php
-	}
-
-	public function add_dashboard_widgets(): void {
-		wp_add_dashboard_widget( 'hcaa_disclaimer_widget', 'HCAA Compliance Notice', [ $this, 'render_disclaimer_widget' ] );
-	}
-
-	public function render_disclaimer_widget(): void {
-		echo '<div class="hcaa-widget-content">';
-		echo '<p style="font-style: italic; color: #646970; border-left: 3px solid #d63638; padding-left: 12px; margin-bottom: 15px;">' . esc_html( self::DISCLAIMER ) . '</p>';
-		echo '<a href="' . admin_url('admin.php?page=hoacoa-faa-audit') . '" class="button button-primary">Run Compliance Audit</a>';
-		echo '</div>';
-	}
-
 	public function add_menu(): void {
-		add_menu_page( 'Archive Assistant', 'Archive Assistant', 'manage_options', 'hoacoa-faa-main', [ $this, 'render_dashboard' ], 'dashicons-archive', 4 );
+		$dashboard = new HOACOA_FAA_Dashboard();
+		
+		add_menu_page( 'Archive Assistant', 'Archive Assistant', 'manage_options', 'hoacoa-faa-main', [ $dashboard, 'render' ], 'dashicons-archive', 4 );
+		add_submenu_page( 'hoacoa-faa-main', 'Dashboard', 'Dashboard', 'manage_options', 'hoacoa-faa-main', [ $dashboard, 'render' ] );
 		add_submenu_page( 'hoacoa-faa-main', 'Audit Report', 'Audit Report', 'manage_options', 'hoacoa-faa-audit', [ $this, 'render_audit_report' ] );
 		add_submenu_page( 'hoacoa-faa-main', 'Settings', 'Settings', 'manage_options', 'hoacoa-faa-settings', [ $this, 'render_settings' ] );
 		add_submenu_page( 'hoacoa-faa-main', 'Activity Log', 'Activity Log', 'manage_options', 'hoacoa-faa-logs', [ $this, 'render_logs' ] );
-	}
-
-	/**
-	 * Generates a deep link to a specific folder for elFinder-based plugins.
-	 */
-	private function get_file_manager_link( string $full_file_path = '' ): string {
-		$opt = get_option('hoacoa_faa_options', []);
-		$bridge = $opt['fm_bridge'] ?? 'none';
-		
-		$base_url = match($bridge) {
-			'wp-file-manager' => admin_url('admin.php?page=wp_file_manager'),
-			'file-manager-advanced' => admin_url('admin.php?page=file_manager_advanced_ui'),
-			'filester' => admin_url('admin.php?page=njt-fs-filemanager'),
-			default => '',
-		};
-
-		if ( empty($base_url) || empty($full_file_path) ) return $base_url;
-
-		$absolute_dir = dirname(trailingslashit($opt['path_owner'] ?? '') . ltrim($full_file_path, '/'));
-		$volume_root = ABSPATH;
-
-		if ( $bridge === 'file-manager-advanced' ) {
-			$fma_opt = get_option('fmaoptions');
-			$volume_root = $fma_opt['public_path'] ?? ABSPATH;
-		} elseif ( $bridge === 'filester' ) {
-			$fs_opt = get_option('njt_fs_settings');
-			if ( !empty($fs_opt['njt_fs_file_manager_settings']['root_folder_path']) ) {
-				$volume_root = $fs_opt['njt_fs_file_manager_settings']['root_folder_path'];
-			}
-		} elseif ( $bridge === 'wp-file-manager' ) {
-			$wpfm_opt = get_option('wp_file_manager_settings');
-			if ( !empty($wpfm_opt['public_path']) ) {
-				$volume_root = $wpfm_opt['public_path'];
-			}
-		}
-
-		$relative = str_replace( trailingslashit($volume_root), '', trailingslashit($absolute_dir) );
-		$relative = trim(str_replace('\\', '/', $relative), '/'); 
-		
-		if (empty($relative)) {
-			$hash = 'l1_Lw';
-		} else {
-			$hash = 'l1_' . rtrim(strtr(base64_encode($relative), '+/=', '-_.'), '.');
-		}
-		
-		return $base_url . '#elf_' . $hash;
-	}
-
-	public function render_dashboard(): void {
-		$report = get_transient( 'hcaa_last_audit_report' );
-		$opt = get_option('hoacoa_faa_options', []);
-		$cats = $opt['categories'] ?? [];
-		?>
-		<div class="wrap">
-			<h1>Archive Assistant Dashboard</h1>
-			<div style="background: #fff; padding: 15px; border: 1px solid #ccd0d4; border-radius: 4px; margin: 20px 0;">
-				<p><strong>Note:</strong> <?php echo esc_html( self::DISCLAIMER ); ?></p>
-			</div>
-
-			<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-top: 20px;">
-				<div class="card" style="margin:0; padding:20px; border-left:4px solid #2271b1;">
-					<h3>Managed Files</h3>
-					<p style="font-size:28px; font-weight:bold; margin: 10px 0;"><?php echo count($report ?: []); ?></p>
-					<small>Documents currently tracked in audit.</small>
-				</div>
-				<div class="card" style="margin:0; padding:20px; border-left:4px solid #d63638;">
-					<h3>Format Mismatches</h3>
-					<?php $mismatches = array_filter((array)$report, fn($f) => $f['status'] === 'Mismatch'); ?>
-					<p style="font-size:28px; font-weight:bold; color:#d63638; margin: 10px 0;"><?php echo count($mismatches); ?></p>
-					<small>Files requiring manual rename before archive.</small>
-				</div>
-			</div>
-
-			<h2 style="margin-top:40px;">Latest Category Snapshots</h2>
-			<table class="widefat striped" style="margin-top: 10px;">
-				<thead><tr><th>Category</th><th>Most Recent File Found</th><th>Sub-folder</th></tr></thead>
-				<tbody>
-					<?php if ( empty($cats) ) : ?>
-						<tr><td colspan="3">No categories defined.</td></tr>
-					<?php else : 
-						foreach ( $cats as $cat ) : 
-							$latest = 'No data';
-							if ($report) {
-								foreach($report as $f) {
-									if ($f['category'] === $cat['name']) { $latest = $f['name']; break; }
-								}
-							}
-							?>
-							<tr>
-								<td><strong><?php echo esc_html($cat['name']); ?></strong></td>
-								<td><code><?php echo esc_html($latest); ?></code></td>
-								<td><code>/<?php echo esc_html($cat['folder']); ?>/</code></td>
-							</tr>
-						<?php endforeach; 
-					endif; ?>
-				</tbody>
-			</table>
-		</div>
-		<?php
 	}
 
 	public function render_audit_report() {
@@ -185,17 +38,27 @@ class HOACOA_FAA_Admin {
 		?>
 		<div class="wrap">
 			<h1>System Audit Report</h1>
-			<button type="button" class="button button-primary" id="hcaa-run-audit">Re-Scan System Now</button>
-			<div id="hcaa-audit-results" style="margin-top:20px;">
+			<div class="hcaa-audit-actions" style="margin: 20px 0; display: flex; align-items: center; gap: 20px;">
+				<button type="button" class="button button-primary" id="hcaa-run-audit">Re-Scan System Now</button>
 				<?php if ( $cached ) : ?>
-					<table class="widefat striped">
+					<ul class="subsubsub" style="margin: 0; float: none;">
+						<li><a href="#" class="hcaa-filter current" data-filter="all">All <span class="count">(<?php echo count($cached); ?>)</span></a> |</li>
+						<li><a href="#" class="hcaa-filter" data-filter="Valid">Valid <span class="count">(<?php echo count(array_filter($cached, fn($f) => $f['status'] === 'Valid')); ?>)</span></a> |</li>
+						<li><a href="#" class="hcaa-filter" data-filter="Mismatch">Mismatch <span class="count" style="color:#d63638;">(<?php echo count(array_filter($cached, fn($f) => $f['status'] === 'Mismatch')); ?>)</span></a> |</li>
+						<li><a href="#" class="hcaa-filter" data-filter="Ignored">Unmanaged <span class="count">(<?php echo count(array_filter($cached, fn($f) => $f['status'] === 'Ignored')); ?>)</span></a></li>
+					</ul>
+				<?php endif; ?>
+			</div>
+			<div id="hcaa-audit-results">
+				<?php if ( $cached ) : ?>
+					<table class="widefat striped" id="hcaa-audit-table">
 						<thead><tr><th>File</th><th>Category</th><th>Audit Status</th><th>Scheduled Move</th></tr></thead>
 						<tbody>
 							<?php foreach ( $cached as $f ) : 
 								$color = ( $f['status'] === 'Valid' ) ? 'green' : ( $f['status'] === 'Mismatch' ? 'red' : 'gray' );
 								$fm_url = $this->get_file_manager_link($f['path']);
 								?>
-								<tr>
+								<tr class="hcaa-row" data-status="<?php echo esc_attr($f['status']); ?>">
 									<td>
 										<strong><?php echo esc_html($f['name']); ?></strong><br>
 										<small><?php echo esc_html($f['path']); ?></small>
@@ -216,42 +79,15 @@ class HOACOA_FAA_Admin {
 		<?php
 	}
 
-	public function enqueue_assets($h) { 
-		if(!str_contains($h,'hoacoa-faa')) return; 
-		wp_add_inline_script('jquery-core', "jQuery(document).ready(function($){ 
-			$('#hcaa-run-audit').on('click', function(){ 
-				var b=$(this); b.attr('disabled',true).text('Scanning...'); 
-				$.post(ajaxurl,{action:'hoacoa_faa_run_system_audit'},function(){location.reload();}); 
-			}); 
-			$(document).on('click','.hcaa-validate-path',function(){ 
-				var b=$(this); var td=b.closest('td'); 
-				$.post(ajaxurl,{action:b.hasClass('hcaa-validate-category')?'hoacoa_faa_validate_category':'hoacoa_faa_check_path',path:td.find('input[type=text]').val()},function(r){
-					td.find('.path-status').html(r.success?'✔':'✖ <button type=\"button\" class=\"button hcaa-create-path\">Create</button>');
-				}); 
-			}); 
-			$(document).on('click','.hcaa-create-path',function(){ 
-				var td=$(this).closest('td'); 
-				$.post(ajaxurl,{action:'hoacoa_faa_create_path',path:td.find('input[type=text]').val(),is_category:td.find('.hcaa-validate-category').length>0},function(r){
-					if(r.success)td.find('.path-status').html('✔');
-				}); 
-			}); 
-			$('.hcaa-add-category').on('click',function(){ 
-				var t=$('#hcaa-category-table tbody'); 
-				t.append($('#hcaa-category-template').html().replace(/{{INDEX}}/g,t.find('tr').length)); 
-			}); 
-			$(document).on('click','.hcaa-remove-row',function(){ $(this).closest('tr').remove(); }); 
-		});"); 
-	}
-	
 	public function render_settings() { 
 		$tab = $_GET['tab'] ?? 'folders'; $opt = get_option('hoacoa_faa_options', []);
 		?>
 		<div class="wrap">
 			<h1>Settings</h1>
-			<h2 class="nav-tab-wrapper">
+			<div class="nav-tab-wrapper">
 				<a href="?page=hoacoa-faa-settings&tab=folders" class="nav-tab <?php echo $tab=='folders'?'nav-tab-active':''; ?>">Folders & Bridges</a>
 				<a href="?page=hoacoa-faa-settings&tab=categories" class="nav-tab <?php echo $tab=='categories'?'nav-tab-active':''; ?>">Categories</a>
-			</h2>
+			</div>
 			<form method="post" action="options.php">
 				<?php settings_fields('hoacoa_faa_options_group'); ?>
 				<?php if ($tab == 'folders') : ?>
@@ -267,7 +103,6 @@ class HOACOA_FAA_Admin {
 									<option value="file-manager-advanced" <?php selected($opt['fm_bridge']??'', 'file-manager-advanced'); ?>>File Manager Advanced</option>
 									<option value="filester" <?php selected($opt['fm_bridge']??'', 'filester'); ?>>Filester</option>
 								</select>
-								<p class="description">Adds direct links to the Audit Report to help fix filename mismatches.</p>
 							</td>
 						</tr>
 					</table>
@@ -293,12 +128,113 @@ class HOACOA_FAA_Admin {
 		</div>
 		<?php
 	}
+
 	public function render_logs() {
 		$logs = HOACOA_FAA_Logger::get_logs();
 		echo '<div class="wrap"><h1>Activity Log</h1><table class="widefat striped"><thead><tr><th>Time</th><th>Type</th><th>Message</th></tr></thead><tbody>';
 		foreach($logs as $l) { $p = explode('|',$l); echo '<tr><td>'.($p[0]??'').'</td><td>'.($p[1]??'').'</td><td>'.($p[2]??'').'</td></tr>'; }
 		echo '</tbody></table></div>';
 	}
+	
+	private function get_file_manager_link( string $full_file_path = '' ): string {
+		$opt = get_option('hoacoa_faa_options', []);
+		$bridge = $opt['fm_bridge'] ?? 'none';
+		$base_url = match($bridge) {
+			'wp-file-manager' => admin_url('admin.php?page=wp_file_manager'),
+			'file-manager-advanced' => admin_url('admin.php?page=file_manager_advanced_ui'),
+			'filester' => admin_url('admin.php?page=njt-fs-filemanager'),
+			default => '',
+		};
+		if ( empty($base_url) || empty($full_file_path) ) return $base_url;
+		$absolute_dir = dirname(trailingslashit($opt['path_owner'] ?? '') . ltrim($full_file_path, '/'));
+		$volume_root = ABSPATH;
+		if ( $bridge === 'file-manager-advanced' ) {
+			$fma_opt = get_option('fmaoptions');
+			$volume_root = $fma_opt['public_path'] ?? ABSPATH;
+		} elseif ( $bridge === 'filester' ) {
+			$fs_opt = get_option('njt_fs_settings');
+			if ( !empty($fs_opt['njt_fs_file_manager_settings']['root_folder_path']) ) { $volume_root = $fs_opt['njt_fs_file_manager_settings']['root_folder_path']; }
+		} elseif ( $bridge === 'wp-file-manager' ) {
+			$wpfm_opt = get_option('wp_file_manager_settings');
+			if ( !empty($wpfm_opt['public_path']) ) { $volume_root = $wpfm_opt['public_path']; }
+		}
+		$relative = str_replace( trailingslashit($volume_root), '', trailingslashit($absolute_dir) );
+		$relative = trim(str_replace('\\', '/', $relative), '/'); 
+		if (empty($relative)) { $hash = 'l1_Lw'; } else { $hash = 'l1_' . rtrim(strtr(base64_encode($relative), '+/=', '-_.'), '.'); }
+		return $base_url . '#elf_' . $hash;
+	}
+
+	public function enqueue_assets($h) { 
+		if(!str_contains($h,'hoacoa-faa')) return; 
+		wp_add_inline_script('jquery-core', "jQuery(document).ready(function($){ 
+			$('.hcaa-filter').on('click', function(e){
+				e.preventDefault();
+				$('.hcaa-filter').removeClass('current');
+				$(this).addClass('current');
+				var filter = $(this).data('filter');
+				if(filter === 'all'){ $('.hcaa-row').show(); } 
+				else { $('.hcaa-row').hide().filter('[data-status=\"'+filter+'\"]').show(); }
+			});
+			$('#hcaa-run-audit').on('click', function(){ 
+				var b=$(this); b.attr('disabled',true).text('Scanning...'); 
+				$.post(ajaxurl,{action:'hoacoa_faa_run_system_audit'},function(){location.reload();}); 
+			}); 
+			$(document).on('click','.hcaa-validate-path',function(){ 
+				var b=$(this); var td=b.closest('td'); 
+				$.post(ajaxurl,{action:b.hasClass('hcaa-validate-category')?'hoacoa_faa_validate_category':'hoacoa_faa_check_path',path:td.find('input[type=text]').val()},function(r){
+					td.find('.path-status').html(r.success?'✔':'✖ <button type=\"button\" class=\"button hcaa-create-path\">Create</button>');
+				}); 
+			}); 
+			$(document).on('click','.hcaa-create-path',function(){ 
+				var td=$(this).closest('td'); 
+				$.post(ajaxurl,{action:'hoacoa_faa_create_path',path:td.find('input[type=text]').val(),is_category:td.find('.hcaa-validate-category').length>0},function(r){
+					if(r.success)td.find('.path-status').html('✔');
+				}); 
+			}); 
+			$('.hcaa-add-category').on('click',function(){ 
+				var t=$('#hcaa-category-table tbody'); 
+				t.append($('#hcaa-category-template').html().replace(/{{INDEX}}/g,t.find('tr').length)); 
+			}); 
+			$(document).on('click','.hcaa-remove-row',function(){ $(this).closest('tr').remove(); }); 
+		});"); 
+	}
+
+	public function inject_fm_pro_hash_fix(): void {
+		if ( ! isset( $_GET['page'] ) ) return;
+		$fm_pages = [ 'wp_file_manager', 'file_manager_advanced_ui', 'njt-fs-filemanager' ];
+		if ( ! in_array( $_GET['page'], $fm_pages ) ) return;
+		?>
+		<script>
+		(function($) {
+			if (window.location.hash && window.location.hash.indexOf('#elf_l1_') === 0) {
+				var originalReplaceState = history.replaceState;
+				history.replaceState = function(state, title, url) {
+					if (url && url.indexOf('admin.php') !== -1 && url.indexOf('#') === -1) { return; }
+					return originalReplaceState.apply(history, arguments);
+				};
+				$(document).on('elfinderready', function() {
+					if (typeof elFinderInstance !== 'undefined') {
+						elFinderInstance._fmaFirstRootBound = true; 
+						elFinderInstance._wpfmFirstRootBound = true;
+					}
+				});
+			}
+		})(jQuery);
+		</script>
+		<?php
+	}
+
+	public function add_dashboard_widgets(): void {
+		wp_add_dashboard_widget( 'hcaa_disclaimer_widget', 'HCAA Compliance Notice', [ $this, 'render_disclaimer_widget' ] );
+	}
+
+	public function render_disclaimer_widget(): void {
+		echo '<div class="hcaa-widget-content">';
+		echo '<p style="font-style: italic; color: #646970; border-left: 3px solid #d63638; padding-left: 12px; margin-bottom: 15px;">' . esc_html( self::DISCLAIMER ) . '</p>';
+		echo '<a href="' . admin_url('admin.php?page=hoacoa-faa-main') . '" class="button button-primary">Archive Assistant Dashboard</a>';
+		echo '</div>';
+	}
+
 	public function settings_init() { register_setting( 'hoacoa_faa_options_group', 'hoacoa_faa_options', [ $this, 'sanitize_options' ] ); }
 	public function sanitize_options( $new ) { return array_merge( (array)get_option('hoacoa_faa_options', []), (array)$new ); }
 	public function ajax_check_path() { wp_send_json(['success'=>is_dir($_POST['path'])]); }
