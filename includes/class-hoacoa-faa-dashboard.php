@@ -1,8 +1,8 @@
 <?php
 /**
- * Plugin Dashboard & Dynamic Compliance Hub
+ * Plugin Dashboard & Compliance Feed
  * @package HOA/COA File Archive Assistant
- * @version 1.3.2
+ * @version 1.3.3
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
@@ -14,6 +14,17 @@ class HOACOA_FAA_Dashboard {
 		$chapters = get_terms([ 'taxonomy' => 'hcaa_statute_type', 'hide_empty' => false ]);
 		$selected_chapter = $_GET['chapter'] ?? ($chapters[0]->term_id ?? 0);
 		
+		// Handle Print Request
+		if ( isset( $_GET['hcaa_print'] ) ) {
+			$this->render_print_view((int)$selected_chapter);
+			exit;
+		}
+
+		// Handle Baseline Import Request
+		if ( isset( $_POST['hcaa_import_baseline'] ) && check_admin_referer('hcaa_import_action')) {
+			$this->import_baseline_archive();
+		}
+
 		$versions = get_posts([
 			'post_type'      => 'hcaa_statute',
 			'posts_per_page' => -1,
@@ -25,6 +36,19 @@ class HOACOA_FAA_Dashboard {
 		?>
 		<div class="wrap">
 			<h1>Archive Assistant Dashboard</h1>
+
+			<?php 
+			// Check if archive is empty
+			$count = wp_count_posts('hcaa_statute')->publish;
+			if ( 0 == $count ) : ?>
+				<div class="notice notice-warning" style="margin: 20px 0; padding: 15px; border-left-color: #ffb900;">
+					<p style="font-size:15px;"><strong>Baseline Archive Detected:</strong> No statute history found in the database. Would you like to import the pre-configured 2017-2025 compliance logs from the plugin folder?</p>
+					<form method="post">
+						<?php wp_nonce_field('hcaa_import_action'); ?>
+						<button type="submit" name="hcaa_import_baseline" class="button button-primary">Import 718/720 Baseline Archive</button>
+					</form>
+				</div>
+			<?php endif; ?>
 			
 			<div style="background: #fff; padding: 15px; border: 1px solid #ccd0d4; border-radius: 4px; margin: 20px 0;">
 				<p style="margin:0;"><strong>Compliance Notice:</strong> <?php echo esc_html( HOACOA_FAA_Admin::DISCLAIMER ); ?></p>
@@ -47,14 +71,9 @@ class HOACOA_FAA_Dashboard {
 			<div class="card" style="max-width:100%; padding:0;">
 				<div style="padding:15px 20px; border-bottom:1px solid #ccd0d4; background:#f6f7f7; display:flex; justify-content:space-between; align-items:center;">
 					<h2 style="margin:0;">Statute Compliance Change Log</h2>
-                    
                     <div style="display:flex; gap:10px; align-items:center;">
                         <a href="<?php echo esc_url( add_query_arg( [ 'hcaa_print_log' => 1, 'hcaa_chapter' => $selected_chapter ], home_url( '/' ) ) ); ?>" 
-                           target="_blank" 
-                           class="button">
-                           <span class="dashicons dashicons-printer" style="vertical-align: middle; margin-top: 4px;"></span> 
-                           Print to PDF
-                        </a>
+                           target="_blank" class="button"><span class="dashicons dashicons-printer" style="vertical-align: middle; margin-top: 4px;"></span> Print to PDF</a>
                         <form method="get">
                             <input type="hidden" name="page" value="hoacoa-faa-main">
                             <select name="chapter" onchange="this.form.submit()">
@@ -93,6 +112,52 @@ class HOACOA_FAA_Dashboard {
 			.hcaa-content-parsed p { margin-bottom: 15px; }
 		</style>
 		<?php
+	}
+
+	/**
+	 * Processes the bundled XML archive
+	 */
+	private function import_baseline_archive(): void {
+		$xml_file = HOACOA_FAA_PATH . 'includes/FL718.FL720.Archive.2026-04-04.xml';
+		
+		if ( ! file_exists( $xml_file ) ) {
+			echo '<div class="notice notice-error"><p>Import failed: XML file not found in includes directory.</p></div>';
+			return;
+		}
+
+		// Use simplexml to parse the WXR format
+		$xml = simplexml_load_file($xml_file, 'SimpleXMLElement', LIBXML_NOCDATA);
+		$ns = $xml->getNamespaces(true);
+
+		foreach ($xml->channel->item as $item) {
+			$wp = $item->children($ns['wp']);
+			$content = $item->children($ns['content']);
+
+			// Insert the Statute Post
+			$post_id = wp_insert_post([
+				'post_title'   => (string) $item->title,
+				'post_content' => (string) $content->encoded,
+				'post_status'  => 'publish',
+				'post_type'    => 'hcaa_statute'
+			]);
+
+			if ( ! is_wp_error($post_id) ) {
+				// Handle Metadata (The Markdown Log)
+				foreach ($wp->postmeta as $meta) {
+					if ((string)$meta->meta_key === '_hcaa_statute_markdown_log') {
+						update_post_meta($post_id, '_hcaa_statute_markdown_log', (string)$meta->meta_value);
+					}
+				}
+
+				// Handle Taxonomy (718 vs 720)
+				foreach ($item->category as $cat) {
+					if ((string)$cat['domain'] === 'hcaa_statute_type') {
+						wp_set_object_terms($post_id, (string)$cat, 'hcaa_statute_type', true);
+					}
+				}
+			}
+		}
+		echo '<script>window.location.reload();</script>';
 	}
 
     public function render_print_view( int $chapter_id ): void {
