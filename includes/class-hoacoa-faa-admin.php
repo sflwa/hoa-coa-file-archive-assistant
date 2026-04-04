@@ -2,7 +2,7 @@
 /**
  * Admin UI & Infrastructure Hub
  * @package HOA/COA File Archive Assistant
- * @version 1.2.26
+ * @version 1.2.27
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
@@ -46,7 +46,7 @@ class HOACOA_FAA_Admin {
 	}
 
 	public function render_audit_report() {
-		$cached = get_transient( 'hcaa_last_audit_report' );
+		$cached = get_option( 'hcaa_last_audit_report' );
 		?>
 		<div class="wrap">
 			<h1>System Audit Report</h1>
@@ -64,7 +64,15 @@ class HOACOA_FAA_Admin {
 			<div id="hcaa-audit-results">
 				<?php if ( $cached ) : ?>
 					<table class="widefat striped" id="hcaa-audit-table">
-						<thead><tr><th>File</th><th>Category</th><th>Audit Status</th><th>Scheduled Move</th></tr></thead>
+						<thead>
+							<tr>
+								<th>File</th>
+								<th>Category & Group</th>
+								<th>Audit Status</th>
+								<th>Latest?</th>
+								<th>Scheduled Move</th>
+							</tr>
+						</thead>
 						<tbody>
 							<?php foreach ( $cached as $f ) : 
 								$color = ( $f['status'] === 'Valid' ) ? 'green' : ( $f['status'] === 'Mismatch' ? 'red' : 'gray' );
@@ -78,9 +86,23 @@ class HOACOA_FAA_Admin {
 											<div style="margin-top:5px;"><a href="<?php echo esc_url($fm_url); ?>" class="button button-small" target="_blank">Open Folder to Rename</a></div>
 										<?php endif; ?>
 									</td>
-									<td><?php echo esc_html($f['category']); ?></td>
+									<td>
+										<strong><?php echo esc_html($f['category']); ?></strong><br>
+										<small>Group: <?php echo esc_html($f['group'] ?? 'None'); ?></small>
+									</td>
 									<td style="color:<?php echo $color; ?>; font-weight:bold;"><?php echo esc_html($f['status']); ?></td>
-									<td><code><?php echo esc_html($f['move_on']); ?></code></td>
+									<td>
+										<?php if ( !empty($f['is_newest']) ) : ?>
+											<span class="dashicons dashicons-star-filled" style="color:#ffb900;" title="Newest file in this category"></span>
+										<?php endif; ?>
+									</td>
+									<td>
+										<?php if ( ($f['mode'] ?? 'sweep') === 'no-sweep' ) : ?>
+											<span class="description">Tracking Only</span>
+										<?php else: ?>
+											<code><?php echo esc_html($f['move_on']); ?></code>
+										<?php endif; ?>
+									</td>
 								</tr>
 							<?php endforeach; ?>
 						</tbody>
@@ -98,7 +120,7 @@ class HOACOA_FAA_Admin {
 			<h1>Settings</h1>
 			<div class="nav-tab-wrapper">
 				<a href="?page=hoacoa-faa-settings&tab=folders" class="nav-tab <?php echo $tab=='folders'?'nav-tab-active':''; ?>">Folders & Bridges</a>
-				<a href="?page=hoacoa-faa-settings&tab=categories" class="nav-tab <?php echo $tab=='categories'?'nav-tab-active':''; ?>">Categories</a>
+				<a href="?page=hoacoa-faa-settings&tab=categories" class="nav-tab <?php echo $tab=='categories'?'nav-tab-active':''; ?>">Categories & Reporting Groups</a>
 			</div>
 			<form method="post" action="options.php">
 				<?php settings_fields('hoacoa_faa_options_group'); ?>
@@ -119,21 +141,61 @@ class HOACOA_FAA_Admin {
 						</tr>
 					</table>
 				<?php else : ?>
+					<p class="description" style="margin-top:15px;">Define your folder structure. <strong>Reporting Group</strong> allows multiple sub-folders (like Workshop Minutes and Board Minutes) to be grouped into one gauge on the Board Checklist.</p>
 					<table class="widefat striped" id="hcaa-category-table">
-						<thead><tr><th>Category</th><th>Sub-folder</th><th>Format</th><th>Action</th></tr></thead>
+						<thead>
+							<tr>
+								<th style="width:15%;">Category Name</th>
+								<th style="width:15%;">Reporting Group</th>
+								<th style="width:20%;">Sub-folder Path</th>
+								<th style="width:20%;">Filename Format</th>
+								<th style="width:15%;">Retention</th>
+								<th style="width:10%;">Action</th>
+							</tr>
+						</thead>
 						<tbody>
 							<?php foreach ((array)($opt['categories']??[]) as $i => $c) : ?>
 								<tr>
-									<td><input type="text" name="hoacoa_faa_options[categories][<?php echo $i; ?>][name]" value="<?php echo esc_attr($c['name']??''); ?>"></td>
-									<td><input type="text" name="hoacoa_faa_options[categories][<?php echo $i; ?>][folder]" value="<?php echo esc_attr($c['folder']??''); ?>"><button type="button" class="button hcaa-validate-path hcaa-validate-category">Check</button><span class="path-status"></span></td>
-									<td><input type="text" name="hoacoa_faa_options[categories][<?php echo $i; ?>][format]" value="<?php echo esc_attr($c['format']??''); ?>" style="width:100%;"></td>
+									<td><input type="text" name="hoacoa_faa_options[categories][<?php echo $i; ?>][name]" value="<?php echo esc_attr($c['name']??''); ?>" style="width:100%;"></td>
+									<td><input type="text" name="hoacoa_faa_options[categories][<?php echo $i; ?>][group]" value="<?php echo esc_attr($c['group']??''); ?>" style="width:100%;" placeholder="e.g. Minutes"></td>
+									<td>
+										<input type="text" name="hoacoa_faa_options[categories][<?php echo $i; ?>][folder]" value="<?php echo esc_attr($c['folder']??''); ?>" style="width:70%;">
+										<button type="button" class="button hcaa-validate-path hcaa-validate-category" title="Validate Path">Check</button>
+										<span class="path-status"></span>
+									</td>
+									<td><input type="text" name="hoacoa_faa_options[categories][<?php echo $i; ?>][format]" value="<?php echo esc_attr($c['format']??''); ?>" style="width:100%;" placeholder="YYYY-MM-DD %"></td>
+									<td>
+										<select name="hoacoa_faa_options[categories][<?php echo $i; ?>][mode]">
+											<option value="sweep" <?php selected($c['mode']??'sweep', 'sweep'); ?>>Auto-Archive</option>
+											<option value="no-sweep" <?php selected($c['mode']??'sweep', 'no-sweep'); ?>>No Sweep (Track Only)</option>
+										</select>
+									</td>
 									<td><button type="button" class="button hcaa-remove-row">Remove</button></td>
 								</tr>
 							<?php endforeach; ?>
 						</tbody>
 					</table>
-					<p><button type="button" class="button hcaa-add-category">Add Category</button></p>
-					<script type="text/template" id="hcaa-category-template"><tr><td><input type="text" name="hoacoa_faa_options[categories][{{INDEX}}][name]"></td><td><input type="text" name="hoacoa_faa_options[categories][{{INDEX}}][folder]"><button type="button" class="button hcaa-validate-path hcaa-validate-category">Check</button><span class="path-status"></span></td><td><input type="text" name="hoacoa_faa_options[categories][{{INDEX}}][format]" style="width:100%;"></td><td><button type="button" class="button hcaa-remove-row">Remove</button></td></tr></script>
+					<p><button type="button" class="button hcaa-add-category">Add New Category</button></p>
+					
+					<script type="text/template" id="hcaa-category-template">
+						<tr>
+							<td><input type="text" name="hoacoa_faa_options[categories][{{INDEX}}][name]" style="width:100%;"></td>
+							<td><input type="text" name="hoacoa_faa_options[categories][{{INDEX}}][group]" style="width:100%;" placeholder="e.g. Minutes"></td>
+							<td>
+								<input type="text" name="hoacoa_faa_options[categories][{{INDEX}}][folder]" style="width:70%;">
+								<button type="button" class="button hcaa-validate-path hcaa-validate-category">Check</button>
+								<span class="path-status"></span>
+							</td>
+							<td><input type="text" name="hoacoa_faa_options[categories][{{INDEX}}][format]" style="width:100%;" placeholder="YYYY-MM-DD %"></td>
+							<td>
+								<select name="hoacoa_faa_options[categories][{{INDEX}}][mode]">
+									<option value="sweep">Auto-Archive</option>
+									<option value="no-sweep">No Sweep (Track Only)</option>
+								</select>
+							</td>
+							<td><button type="button" class="button hcaa-remove-row">Remove</button></td>
+						</tr>
+					</script>
 				<?php endif; ?>
 				<?php submit_button(); ?>
 			</form>
